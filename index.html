@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flashcards — Spaced Repetition</title>
+
+<!-- Tailwind + DaisyUI -->
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+<!-- Lucide icons -->
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+
+<style>
+  .flip-card { perspective: 1200px; height: 20rem; cursor: pointer; }
+  .flip-inner {
+    position: relative; width: 100%; height: 100%;
+    transition: transform .5s; transform-style: preserve-3d;
+  }
+  .flip-card.flipped .flip-inner { transform: rotateY(180deg); }
+  .face {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: .75rem; padding: 1.5rem; border-radius: 1rem; text-align: center; overflow: auto;
+    backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  }
+  .face.back { transform: rotateY(180deg); }
+</style>
+</head>
+
+<body class="min-h-screen bg-base-200 text-base-content">
+<div class="max-w-xl mx-auto p-4 space-y-4">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between gap-2">
+    <h1 class="text-2xl font-bold flex items-center gap-2">
+      <i data-lucide="layers" class="w-6 h-6 text-primary"></i> Flashcards
+    </h1>
+    <div class="flex gap-2">
+      <button id="themeBtn" class="btn btn-ghost btn-circle" aria-label="Toggle theme"></button>
+      <button id="addBtn" class="btn btn-primary btn-sm"><i data-lucide="plus" class="w-4 h-4"></i> New</button>
+    </div>
+  </header>
+
+  <!-- Categories -->
+  <div id="cats" class="flex flex-wrap gap-2"></div>
+
+  <!-- Card -->
+  <div id="stage">
+    <div id="flipCard" class="flip-card">
+      <div class="flip-inner">
+        <div class="face front bg-base-100 border border-base-300 shadow-xl">
+          <span id="frontCat" class="badge badge-outline badge-sm"></span>
+          <p id="frontText" class="text-2xl font-semibold break-words"></p>
+          <span class="absolute bottom-4 text-xs opacity-40">click to flip</span>
+        </div>
+        <div class="face back bg-primary text-primary-content shadow-xl">
+          <span id="backCat" class="badge badge-outline badge-sm"></span>
+          <p id="backText" class="text-2xl font-semibold break-words"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Empty state -->
+  <div id="empty" class="hidden card bg-base-100 border border-dashed border-base-300 h-80 items-center justify-center text-center p-6">
+    <p class="opacity-60">No cards here yet.</p>
+    <button class="btn btn-primary btn-sm mt-3" onclick="document.getElementById('addBtn').click()">Add your first card</button>
+  </div>
+
+  <!-- Actions -->
+  <div id="studyBtns" class="flex gap-2">
+    <button id="reviewBtn" class="btn btn-warning flex-1"><i data-lucide="rotate-ccw" class="w-4 h-4"></i> Need Review</button>
+    <button id="knownBtn" class="btn btn-success flex-1"><i data-lucide="check" class="w-4 h-4"></i> Known</button>
+    <button id="delBtn" class="btn btn-ghost btn-square" title="Delete card"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+  </div>
+
+  <p id="stats" class="text-center text-sm opacity-60"></p>
+</div>
+
+<!-- Add card modal -->
+<dialog id="modal" class="modal">
+  <div class="modal-box space-y-3">
+    <h3 class="font-bold text-lg">New Card</h3>
+    <textarea id="inFront" class="textarea textarea-bordered w-full" rows="2" placeholder="Front (question)"></textarea>
+    <textarea id="inBack" class="textarea textarea-bordered w-full" rows="2" placeholder="Back (answer)"></textarea>
+    <input id="inCat" class="input input-bordered w-full" placeholder="Category (e.g. Spanish)" />
+    <div class="modal-action">
+      <form method="dialog"><button class="btn btn-ghost">Cancel</button></form>
+      <button id="saveBtn" class="btn btn-primary">Add Card</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+/* ---------- State ---------- */
+const KEY = 'fc-cards';
+let cards   = JSON.parse(localStorage.getItem(KEY) || '[]');
+let cat     = 'All';
+let current = null;
+let flipped = false;
+let dark    = localStorage.getItem('fc-dark') === '1';
+
+const $     = s => document.querySelector(s);
+const save  = () => localStorage.setItem(KEY, JSON.stringify(cards));
+const esc   = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const pool  = () => cat === 'All' ? cards : cards.filter(c => c.cat === cat);
+
+/* ---------- Spaced repetition: lower box = shown more often ---------- */
+function pick() {
+  const p = pool();
+  if (!p.length) return null;
+  const list = p.length > 1 ? p.filter(c => c.id !== current?.id) : p;
+  const w = list.map(c => 1 / (c.box + 1));           // weight
+  let r = Math.random() * w.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < list.length; i++) { r -= w[i]; if (r <= 0) return list[i]; }
+  return list[list.length - 1];
+}
+
+/* ---------- Render ---------- */
+function render() {
+  const cats = ['All', ...new Set(cards.map(c => c.cat || 'General'))];
+  if (!cats.includes(cat)) cat = 'All';
+  $('#cats').innerHTML = cats.map(c =>
+    `<button class="btn btn-sm ${c === cat ? 'btn-primary' : 'btn-ghost bg-base-100 border border-base-300'}" data-c="${esc(c)}">${esc(c)}</button>`
+  ).join('');
+  $('#cats').querySelectorAll('button').forEach(b => b.onclick = () => { cat = b.dataset.c; current = null; render(); });
+
+  const has = pool().length > 0;
+  $('#stage').classList.toggle('hidden', !has);
+  $('#empty').classList.toggle('hidden', has);
+  $('#studyBtns').classList.toggle('hidden', !has);
+
+  if (!has) current = null;
+  else if (!current || !pool().some(c => c.id === current.id)) { current = pick(); flipped = false; }
+
+  paint();
+  const review = cards.filter(c => c.box === 0).length;
+  $('#stats').textContent = `${cards.length} card${cards.length === 1 ? '' : 's'} · ${review} need review`;
+}
+
+function paint() {
+  if (!current) return;
+  $('#flipCard').classList.toggle('flipped', flipped);
+  $('#frontText').textContent = current.front;
+  $('#backText').textContent  = current.back;
+  $('#frontCat').textContent  = current.cat || 'General';
+  $('#backCat').textContent   = current.cat || 'General';
+}
+
+/* ---------- Actions ---------- */
+function mark(known) {
+  if (!current) return;
+  current.box = known ? Math.min(current.box + 1, 5) : 0;
+  save();
+  current = null;
+  render();
+}
+
+$('#flipCard').onclick = () => {
+  if (!current) return;
+  flipped = !flipped;
+  $('#flipCard').classList.toggle('flipped', flipped);
+};
+$('#knownBtn').onclick  = () => mark(true);
+$('#reviewBtn').onclick = () => mark(false);
+
+$('#delBtn').onclick = () => {
+  if (!current || !confirm('Delete this card?')) return;
+  cards = cards.filter(c => c.id !== current.id);
+  save(); current = null; render();
+};
+
+/* ---------- Add card ---------- */
+$('#addBtn').onclick = () => {
+  $('#inFront').value = '';
+  $('#inBack').value  = '';
+  $('#inCat').value   = cat === 'All' ? '' : cat;
+  $('#modal').showModal();
+  $('#inFront').focus();
+};
+
+$('#saveBtn').onclick = () => {
+  const front = $('#inFront').value.trim();
+  const back  = $('#inBack').value.trim();
+  if (!front || !back) return;
+  cards.push({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    front, back,
+    cat: $('#inCat').value.trim() || 'General',
+    box: 0
+  });
+  save();
+  $('#modal').close();
+  render();
+};
+
+/* ---------- Theme ---------- */
+function applyTheme() {
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  $('#themeBtn').innerHTML = `<i data-lucide="${dark ? 'sun' : 'moon'}" class="w-5 h-5"></i>`;
+  localStorage.setItem('fc-dark', dark ? '1' : '0');
+  lucide.createIcons();
+}
+$('#themeBtn').onclick = () => { dark = !dark; applyTheme(); };
+
+/* ---------- Keyboard shortcuts ---------- */
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, textarea')) return;
+  if (e.code === 'Space') { e.preventDefault(); $('#flipCard').click(); }
+  else if (e.key === '1') mark(false);
+  else if (e.key === '2') mark(true);
+});
+
+/* ---------- Init ---------- */
+applyTheme();
+render();
+lucide.createIcons();
+</script>
+</body>
+</html>
